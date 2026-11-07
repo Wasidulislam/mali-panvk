@@ -398,6 +398,17 @@ panvk_draw_prepare_fs_rsd(struct panvk_cmd_buffer *cmdbuf,
                            MESA_VK_RP_ATTACHMENT_ANY_COLOR_BITS;
          uint8_t rt_written = color_attachment_written_mask(
             fs, &cmdbuf->vk.dynamic_graphics_state.cal);
+         /* FPK requires every bound color attachment to be fully overwritten. */
+         const struct vk_color_blend_state *cb = &dyns->cb;
+         const VkColorComponentFlags rgba =
+            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+         for (unsigned i = 0; i < MAX_RTS; i++) {
+            if (i >= cb->attachment_count ||
+                !(cb->color_write_enables & BITFIELD_BIT(i)) ||
+                (cb->attachments[i].write_mask & rgba) != rgba)
+               rt_written &= ~BITFIELD_BIT(i);
+         }
          uint8_t rt_read = color_attachment_read_mask(fs, &dyns->ial, rt_mask);
          enum pan_earlyzs_zs_tilebuf_read zs_read =
             (z_attachment_read(fs, &dyns->ial) ||
@@ -430,7 +441,9 @@ panvk_draw_prepare_fs_rsd(struct panvk_cmd_buffer *cmdbuf,
             (fs->info.fs.sample_shading && dyns->ms.rasterization_samples > 1);
       } else {
          cfg.properties.depth_source = MALI_DEPTH_SOURCE_FIXED_FUNCTION;
-         cfg.properties.allow_forward_pixel_to_kill = true;
+         cfg.properties.allow_forward_pixel_to_kill =
+            !(cmdbuf->state.gfx.render.bound_attachments &
+              MESA_VK_RP_ATTACHMENT_ANY_COLOR_BITS);
          cfg.properties.allow_forward_pixel_to_be_killed = true;
          cfg.properties.zs_update_operation = MALI_PIXEL_KILL_FORCE_EARLY;
       }

@@ -1,0 +1,120 @@
+name: Experimental PanVK FPK (Android ARM64)
+
+# Dispatch a ref containing the experimental FPK source changes. Checkout cannot
+# include an uncommitted local patch. No source or reference ZIP is uploaded.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container: debian:13.1-slim
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      BUILD_DIR: build-experimental-fpk
+      GRALLOC: '1'
+      CC: clang-19
+      CXX: clang++-19
+      # Meson uses llvm-config from PATH; isolate the host LLVM major.
+      LLVM_CONFIG: /usr/lib/llvm-19/bin/llvm-config
+
+    steps:
+      # Source minima: Meson 1.4, Python 3.10, LLVM/translator 15 (same
+      # major/minor), SPIRV-Tools 2024.1; README requests glslang >=12.2.
+      # Debian 13 supplies Meson 1.7, Python 3.13, LLVM 19.1 and SPIRV-Tools
+      # 2025.1. Pin apt to a snapshot so later package updates do not drift.
+      - name: Install build dependencies in CI
+        run: |
+          mkdir -p "$RUNNER_TEMP/panvk-ci-logs"
+          exec > >(tee "$RUNNER_TEMP/panvk-ci-logs/dependencies.log") 2>&1
+          rm -f /etc/apt/sources.list.d/debian.sources
+          echo 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/20251101T000000Z/ trixie main' > /etc/apt/sources.list
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            ca-certificates curl unzip git build-essential pkg-config cmake \
+            meson ninja-build python3 python3-mako python3-packaging python3-yaml \
+            glslang-tools spirv-tools llvm-19-dev clang-19 libclang-19-dev \
+            libclang-cpp19-dev libclc-19-dev libclc-19 libllvmspirvlib-19-dev
+          echo '/usr/lib/llvm-19/bin' >> "$GITHUB_PATH"
+          dpkg-query -W > "$RUNNER_TEMP/panvk-ci-logs/packages.txt"
+
+      - name: Checkout selected ref
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Prepare Android NDK r29 and record toolchain
+        run: |
+          exec > >(tee "$RUNNER_TEMP/panvk-ci-logs/toolchain.log") 2>&1
+          test "$(uname -m)" = x86_64
+          curl --fail --location --retry 3 \
+            https://dl.google.com/android/repository/android-ndk-r29-linux.zip \
+            -o "$RUNNER_TEMP/android-ndk-r29-linux.zip"
+          echo '87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b  '"$RUNNER_TEMP/android-ndk-r29-linux.zip" | sha1sum -c -
+          unzip -q "$RUNNER_TEMP/android-ndk-r29-linux.zip" -d "$RUNNER_TEMP"
+          echo "ANDROID_NDK_HOME=$RUNNER_TEMP/android-ndk-r29" >> "$GITHUB_ENV"
+          cat "$RUNNER_TEMP/android-ndk-r29/source.properties"
+          "$RUNNER_TEMP/android-ndk-r29/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android31-clang" --version
+          git rev-parse HEAD
+          meson --version
+          python3 --version
+          llvm-config --version
+          pkg-config --modversion LLVMSPIRVLib SPIRV-Tools
+          glslangValidator --version
+          # The Expat wrap's primary URL has an xz/bz2 mismatch. Seed its
+          # declared fallback archive, verified against the existing wrap hash.
+          python3 - <<'PY'
+          import configparser
+          import hashlib
+          import pathlib
+          import urllib.request
+          wrap = configparser.ConfigParser(interpolation=None)
+          wrap.read('subprojects/expat.wrap')
+          entry = wrap['wrap-file']
+          data = urllib.request.urlopen(entry['source_fallback_url']).read()
+          assert hashlib.sha256(data).hexdigest() == entry['source_hash']
+          cache = pathlib.Path('subprojects/packagecache')
+          cache.mkdir(exist_ok=True)
+          (cache / entry['source_filename']).write_bytes(data)
+          PY
+
+      - name: Build with repository script
+        run: |
+          set -o pipefail
+          ./build.sh "$ANDROID_NDK_HOME" 2>&1 | tee "$RUNNER_TEMP/panvk-ci-logs/build.log"
+
+      - name: Collect experimental binary
+        run: |
+          mkdir -p experimental-fpk
+          cp "$BUILD_DIR/libvulkan_panfrost.so" experimental-fpk/
+          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+            -h experimental-fpk/libvulkan_panfrost.so | tee "$RUNNER_TEMP/panvk-ci-logs/elf-header.txt"
+          grep -q 'AArch64' "$RUNNER_TEMP/panvk-ci-logs/elf-header.txt"
+          sha256sum experimental-fpk/libvulkan_panfrost.so > experimental-fpk/SHA256SUMS
+          git rev-parse HEAD > experimental-fpk/source-revision.txt
+
+      - name: Upload experimental binary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: experimental-panvk-fpk-android-arm64-${{ github.sha }}
+          path: experimental-fpk/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build logs even on failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: experimental-panvk-fpk-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/panvk-ci-logs/
+            build-host/meson-logs/meson-log.txt
+            build-experimental-fpk/meson-logs/meson-log.txt
+          if-no-files-found: warn
+          retention-days: 14
