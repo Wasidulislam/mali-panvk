@@ -611,8 +611,18 @@ build_dcd_flags(struct panvk_cmd_buffer *cmdbuf,
          bool roa_color = dyns->rasterization_order_access &
                           VK_IMAGE_ASPECT_COLOR_BIT;
 
+         /* Disabled color writes cannot overwrite an earlier fragment. */
+         const struct vk_color_blend_state *cb = &dyns->cb;
+         uint8_t rt_write_enabled =
+            cb->color_write_enables & BITFIELD_MASK(cb->attachment_count);
+         for (unsigned i = 0; i < cb->attachment_count; i++) {
+            if (!cb->attachments[i].write_mask)
+               rt_write_enabled &= ~BITFIELD_BIT(i);
+         }
+
          cfg.allow_forward_pixel_to_kill =
             fs->info.fs.can_fpk && !(rt_mask & ~rt_written) &&
+            !(rt_mask & ~rt_write_enabled) &&
             !(rt_read & rt_written) && !alpha_to_coverage &&
             !cmdbuf->state.gfx.cb.info.any_dest_read && !roa_color;
 
