@@ -16,7 +16,9 @@
 
 #include "panvk_cmd_pool.h"
 #include "panvk_descriptor_set.h"
+#include "panvk_image.h"
 #include "panvk_macros.h"
+#include "panvk_sampler.h"
 #include "panvk_shader.h"
 
 #include "vk_alloc.h"
@@ -58,7 +60,9 @@ panvk_shader_res_table_count(struct panvk_shader_desc_state *shader_desc_state)
 struct panvk_push_set {
    struct panvk_cmd_pool_obj base;
    struct panvk_descriptor_set set;
-   struct panvk_opaque_desc descs[MAX_PUSH_DESCS];
+   /* Combined image samplers expand into texture and sampler descriptors. */
+   struct panvk_opaque_desc
+      descs[MAX_PUSH_DESCS * (PANVK_MAX_PLANES + PANVK_MAX_DESCS_PER_SAMPLER)];
 };
 
 struct panvk_descriptor_state {
