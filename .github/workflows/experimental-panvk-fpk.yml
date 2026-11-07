@@ -3,6 +3,9 @@ name: Experimental PanVK FPK (Android ARM64)
 # Dispatch a ref containing the experimental FPK source changes. Checkout cannot
 # include an uncommitted local patch. No source or reference ZIP is uploaded.
 on:
+  push:
+    branches:
+      - experimental-fpk
   workflow_dispatch:
 
 permissions:
